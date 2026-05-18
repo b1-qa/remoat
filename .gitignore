@@ -1,0 +1,57 @@
+# Dependencies
+node_modules/
+
+# Environment (secrets)
+.env
+.env.local
+.env.*.local
+
+# Database (runtime data)
+*.db
+*.db-journal
+
+# Build output
+dist/
+build/
+dist/**/*.js.map
+dist/**/*.d.ts
+tsconfig.tsbuildinfo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Temporary files
+tmp_*
+*.tmp
+
+# Bot lock file (duplicate start prevention)
+.bot.lock
+
+# Personal / internal docs (not for public)
+plans/
+.gemini/
+.claude/
+
+# Manual test checklists (development only)
+manual-tests/
+
+# Debug / inspection scripts (development only)
+inspect_dom.js
+inspect_dom.ts
+scripts/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Coverage
+coverage/
+
+# npm pack artifacts
+*.tgz

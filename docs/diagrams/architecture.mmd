@@ -1,0 +1,33 @@
+flowchart LR
+    %% 🎨 Style Definitions
+    classDef telegram fill:#0088CC,stroke:#ffffff,stroke-width:2px,color:#fff,rx:8px,ry:8px;
+    classDef bot fill:#E67E22,stroke:#ffffff,stroke-width:2px,color:#fff,rx:8px,ry:8px;
+    classDef ai fill:#9B59B6,stroke:#ffffff,stroke-width:2px,color:#fff,rx:8px,ry:8px;
+    classDef fs fill:#475569,stroke:#ffffff,stroke-width:2px,color:#fff,rx:8px,ry:8px;
+    classDef bounds fill:none,stroke:#888,stroke-width:2px,stroke-dasharray: 6 4,rx:12px,ry:12px,color:#888;
+
+    %% ☁️ Remote Scope
+    subgraph Remote ["☁️ Remote (Internet)"]
+        direction TB
+        A["📱 Telegram App<br>(Mobile / PC)"]:::telegram
+    end
+
+    %% 🏠 Local Environment Scope
+    subgraph Local ["🏠 Local (User PC)"]
+        direction LR
+        B["🐾 Remoat<br>(Node.js Bot)"]:::bot
+        C["🧠 Antigravity<br>(AI Editor)"]:::ai
+        D[("💻 File System<br>(Local Files)")]:::fs
+
+        %% Local Communication & Operation
+        B <-->|"CDP WebSocket<br>(Chrome DevTools Protocol)"| C
+        C -->|"Code Generation / File Operations"| D
+    end
+
+    %% 🌐 Remote & Local Communication Flow
+    A -->|"1. Messages (Commands / Prompts)"| B
+    B -->|"4. Execution Results (HTML Messages)"| A
+    C -.->|"3. AI Responses / Logs"| B
+
+    %% Apply bounding box style
+    class Remote,Local bounds;

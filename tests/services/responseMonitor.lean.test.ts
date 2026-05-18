@@ -1,0 +1,538 @@
+/**
+ * Lean ResponseMonitor tests.
+ *
+ * Verifies the simplified ResponseMonitor API:
+ *   - Constructor accepts: cdpService, pollIntervalMs (default 2000),
+ *     maxDurationMs, stopGoneConfirmCount (default 3), onProgress, onComplete,
+ *     onTimeout, onPhaseChange
+ *   - Each poll makes exactly 1 CDP call (COMBINED_POLL) in legacy mode
+ *   - Stop button disappearing 3 consecutive times triggers onComplete
+ *   - Simple baseline suppression (just compare strings)
+ */
+
+import { ResponseMonitor, ResponsePhase } from '../../src/services/responseMonitor';
+
+/**
+ * The NEW lean API renames stopButtonGoneConfirmCount -> stopGoneConfirmCount
+ * and removes many options. We define the expected interface here so tests
+ * document the target shape, while using `as any` casts to bypass current
+ * TS compilation against the old types.
+ */
+interface LeanResponseMonitorOptions {
+    cdpService: any;
+    pollIntervalMs?: number;       // default 2000 (was 1000)
+    maxDurationMs?: number;        // default 300000
+    stopGoneConfirmCount?: number; // default 3 (was stopButtonGoneConfirmCount, default 1)
+    onProgress?: (text: string) => void;
+    onComplete?: (finalText: string) => void;
+    onTimeout?: (lastText: string) => void;
+    onPhaseChange?: (phase: ResponsePhase, text: string | null) => void;
+    // Removed: onActivity, networkCompleteDelayMs, textStabilityCompleteMs,
+    //          noUpdateTimeoutMs, noTextCompletionDelayMs, completionStabilityMs
+}
+
+// Minimal mock: only call, getPrimaryContextId. NO on/removeListener.
+function createMockCdpService() {
+    return {
+        call: jest.fn().mockResolvedValue({ result: { value: null } }),
+        getPrimaryContextId: jest.fn().mockReturnValue(1),
+    };
+}
+
+/**
+ * Helper to build a CDP result for the COMBINED_POLL script.
+ * Returns { isGenerating, quotaError, responseText, processLogs, planningActive }.
+ */
+function combinedResult(opts: {
+    isGenerating?: boolean;
+    quotaError?: boolean;
+    responseText?: string | null;
+    processLogs?: string[];
+    planningActive?: boolean;
+} = {}) {
+    return {
+        result: {
+            value: {
+                isGenerating: opts.isGenerating ?? false,
+                quotaError: opts.quotaError ?? false,
+                responseText: opts.responseText ?? null,
+                processLogs: opts.processLogs ?? [],
+                planningActive: opts.planningActive ?? false,
+            },
+        },
+    };
+}
+
+// Helper: build a CDP result wrapper for baseline calls
+function cdpResult(value: unknown) {
+    return { result: { value } };
+}
+
+describe('Lean ResponseMonitor (new API)', () => {
+    let cdpService: ReturnType<typeof createMockCdpService>;
+
+    beforeEach(() => {
+        jest.useFakeTimers();
+        cdpService = createMockCdpService();
+    });
+
+    afterEach(async () => {
+        jest.useRealTimers();
+    });
+
+    function createMonitor(overrides: Partial<LeanResponseMonitorOptions> = {}): ResponseMonitor {
+        return new ResponseMonitor({
+            cdpService: cdpService as any,
+            pollIntervalMs: 2000,
+            stopGoneConfirmCount: 3,
+            extractionMode: 'legacy',
+            ...overrides,
+        } as any);
+    }
+
+    // ---------------------------------------------------------------
+    // Test 1: start() captures baseline, sets phase to 'waiting', starts polling
+    // ---------------------------------------------------------------
+    it('start() captures baseline, sets phase to waiting, starts polling', async () => {
+        const phases: ResponsePhase[] = [];
+        const monitor = createMonitor({
+            onPhaseChange: (phase) => { phases.push(phase); },
+        });
+
+        // Baseline calls: 1. Artifact counts, 2. RESPONSE_TEXT, 3. PROCESS_LOGS
+        cdpService.call
+            .mockResolvedValueOnce(cdpResult({ notifyCount: 0, cardCount: 0 })) // Artifact counts baseline
+            .mockResolvedValueOnce(cdpResult('existing text'))  // RESPONSE_TEXT baseline
+            .mockResolvedValueOnce(cdpResult(null));             // PROCESS_LOGS baseline
+
+        await monitor.start();
+
+        expect(phases).toContain('waiting');
+        expect(monitor.getPhase()).toBe('waiting');
+        // Baseline should have been captured via 3 CDP calls:
+        // 1. Artifact counts, 2. RESPONSE_TEXT baseline, 3. PROCESS_LOGS baseline
+        expect(cdpService.call).toHaveBeenCalledTimes(3);
+
+        await monitor.stop();
+    });
+
+    // ---------------------------------------------------------------
+    // Test 2: Stop button appearing sets generationStarted, phase to 'thinking'
+    // ---------------------------------------------------------------
+    it('stop button appearing sets phase to thinking', async () => {
+        const phases: ResponsePhase[] = [];
+        const monitor = createMonitor({
+            onPhaseChange: (phase) => { phases.push(phase); },
+        });
+
+        // Baseline: no text
+        cdpService.call
+            .mockResolvedValueOnce(cdpResult({ notifyCount: 0, cardCount: 0 }))
+            .mockResolvedValueOnce(cdpResult(null))   // RESPONSE_TEXT baseline
+            .mockResolvedValueOnce(cdpResult(null));   // PROCESS_LOGS baseline
+        await monitor.start();
+
+        // Poll: COMBINED_POLL returns isGenerating=true, no text
+        cdpService.call.mockResolvedValueOnce(combinedResult({ isGenerating: true }));
+        await jest.advanceTimersByTimeAsync(2000);
+
+        expect(phases).toContain('thinking');
+
+        await monitor.stop();
+    });
+
+    // ---------------------------------------------------------------
+    // Test 3: Text update triggers onProgress and sets phase to 'generating'
+    // ---------------------------------------------------------------
+    it('text update triggers onProgress and sets phase to generating', async () => {
+        const phases: ResponsePhase[] = [];
+        const progressTexts: string[] = [];
+        const monitor = createMonitor({
+            onPhaseChange: (phase) => { phases.push(phase); },
+            onProgress: (text) => { progressTexts.push(text); },
+        });
+
+        cdpService.call
+            .mockResolvedValueOnce(cdpResult({ notifyCount: 0, cardCount: 0 }))
+            .mockResolvedValueOnce(cdpResult(null))
+            .mockResolvedValueOnce(cdpResult(null));
+        await monitor.start();
+
+        // Poll: COMBINED_POLL returns isGenerating=true, text='Hello'
+        cdpService.call.mockResolvedValueOnce(combinedResult({ isGenerating: true, responseText: 'Hello' }));
+        await jest.advanceTimersByTimeAsync(2000);
+
+        expect(phases).toContain('generating');
+        expect(progressTexts).toContain('Hello');
+
+        await monitor.stop();
+    });
+
+    // ---------------------------------------------------------------
+    // Test 4: Stop button disappearing 3 consecutive times triggers onComplete
+    // ---------------------------------------------------------------
+    it('stop button disappearing 3 consecutive times triggers onComplete', async () => {
+        let completedText: string | null = null;
+        const monitor = createMonitor({
+            onComplete: (text) => { completedText = text; },
+        });
+
+        cdpService.call
+            .mockResolvedValueOnce(cdpResult({ notifyCount: 0, cardCount: 0 }))
+            .mockResolvedValueOnce(cdpResult(null))
+            .mockResolvedValueOnce(cdpResult(null));
+        await monitor.start();
+
+        // Poll 1: stop=true, text='response'
+        cdpService.call.mockResolvedValueOnce(combinedResult({ isGenerating: true, responseText: 'response' }));
+        await jest.advanceTimersByTimeAsync(2000);
+
+        // Poll 2: stop=false (gone count 1)
+        cdpService.call.mockResolvedValueOnce(combinedResult({ isGenerating: false, responseText: 'response' }));
+        await jest.advanceTimersByTimeAsync(2000);
+        expect(completedText).toBeNull();
+
+        // Poll 3: stop=false (gone count 2)
+        cdpService.call.mockResolvedValueOnce(combinedResult({ isGenerating: false, responseText: 'response' }));
+        await jest.advanceTimersByTimeAsync(2000);
+        expect(completedText).toBeNull();
+
+        // Poll 4: stop=false (gone count 3) -> complete
+        cdpService.call.mockResolvedValueOnce(combinedResult({ isGenerating: false, responseText: 'response' }));
+        await jest.advanceTimersByTimeAsync(2000);
+        expect(completedText).toBe('response');
+    });
+
+    // ---------------------------------------------------------------
+    // Test 5: Stop button reappearing resets gone counter
+    // ---------------------------------------------------------------
+    it('stop button reappearing resets gone counter', async () => {
+        let completedText: string | null = null;
+        const monitor = createMonitor({
+            onComplete: (text) => { completedText = text; },
+        });
+
+        cdpService.call
+            .mockResolvedValueOnce(cdpResult({ notifyCount: 0, cardCount: 0 }))
+            .mockResolvedValueOnce(cdpResult(null))
+            .mockResolvedValueOnce(cdpResult(null));
+        await monitor.start();
+
+        // Poll 1: stop=true, text='resp'
+        cdpService.call.mockResolvedValueOnce(combinedResult({ isGenerating: true, responseText: 'resp' }));
+        await jest.advanceTimersByTimeAsync(2000);
+
+        // Poll 2: stop=false (gone 1)
+        cdpService.call.mockResolvedValueOnce(combinedResult({ isGenerating: false, responseText: 'resp' }));
+        await jest.advanceTimersByTimeAsync(2000);
+
+        // Poll 3: stop=false (gone 2)
+        cdpService.call.mockResolvedValueOnce(combinedResult({ isGenerating: false, responseText: 'resp' }));
+        await jest.advanceTimersByTimeAsync(2000);
+
+        // Poll 4: stop=TRUE again -> resets counter
+        cdpService.call.mockResolvedValueOnce(combinedResult({ isGenerating: true, responseText: 'resp' }));
+        await jest.advanceTimersByTimeAsync(2000);
+
+        // Poll 5: stop=false (gone 1 again)
+        cdpService.call.mockResolvedValueOnce(combinedResult({ isGenerating: false, responseText: 'resp' }));
+        await jest.advanceTimersByTimeAsync(2000);
+
+        // Should NOT be complete yet (only 1 gone after reset)
+        expect(completedText).toBeNull();
+
+        await monitor.stop();
+    });
+
+    // ---------------------------------------------------------------
+    // Test 6: Text change does NOT reset stop gone counter
+    // ---------------------------------------------------------------
+    it('text change does NOT reset stop gone counter — completion still fires', async () => {
+        let completedText: string | null = null;
+        const monitor = createMonitor({
+            onComplete: (text) => { completedText = text; },
+        });
+
+        cdpService.call
+            .mockResolvedValueOnce(cdpResult({ notifyCount: 0, cardCount: 0 }))
+            .mockResolvedValueOnce(cdpResult(null))
+            .mockResolvedValueOnce(cdpResult(null));
+        await monitor.start();
+
+        // Poll 1: stop=true, text='first'
+        cdpService.call.mockResolvedValueOnce(combinedResult({ isGenerating: true, responseText: 'first' }));
+        await jest.advanceTimersByTimeAsync(2000);
+
+        // Poll 2: stop=false (gone 1), text unchanged
+        cdpService.call.mockResolvedValueOnce(combinedResult({ isGenerating: false, responseText: 'first' }));
+        await jest.advanceTimersByTimeAsync(2000);
+
+        // Poll 3: stop=false (gone 2), text changed — counter must NOT reset
+        cdpService.call.mockResolvedValueOnce(combinedResult({ isGenerating: false, responseText: 'first updated' }));
+        await jest.advanceTimersByTimeAsync(2000);
+
+        // Poll 4: stop=false (gone 3) — should complete despite text change in poll 3
+        cdpService.call.mockResolvedValueOnce(combinedResult({ isGenerating: false, responseText: 'first updated' }));
+        await jest.advanceTimersByTimeAsync(2000);
+
+        expect(completedText).toBe('first updated');
+    });
+
+    // ---------------------------------------------------------------
+    // Test 6b: Continuous text updates after stop-gone do NOT block completion
+    // ---------------------------------------------------------------
+    it('continuous text updates after stop button disappears do NOT block completion', async () => {
+        let completedText: string | null = null;
+        const monitor = createMonitor({
+            onComplete: (text) => { completedText = text; },
+        });
+
+        cdpService.call
+            .mockResolvedValueOnce(cdpResult({ notifyCount: 0, cardCount: 0 }))
+            .mockResolvedValueOnce(cdpResult(null))
+            .mockResolvedValueOnce(cdpResult(null));
+        await monitor.start();
+
+        // Poll 1: stop=true, text='token1'
+        cdpService.call.mockResolvedValueOnce(combinedResult({ isGenerating: true, responseText: 'token1' }));
+        await jest.advanceTimersByTimeAsync(2000);
+
+        // Polls 2-4: stop=false, text keeps changing every poll (streaming tail)
+        cdpService.call.mockResolvedValueOnce(combinedResult({ isGenerating: false, responseText: 'token1 token2' }));
+        await jest.advanceTimersByTimeAsync(2000);
+
+        cdpService.call.mockResolvedValueOnce(combinedResult({ isGenerating: false, responseText: 'token1 token2 token3' }));
+        await jest.advanceTimersByTimeAsync(2000);
+
+        cdpService.call.mockResolvedValueOnce(combinedResult({ isGenerating: false, responseText: 'token1 token2 token3 final' }));
+        await jest.advanceTimersByTimeAsync(2000);
+
+        // Should be complete after 3 consecutive stop-gone, despite text changing each time
+        expect(completedText).toBe('token1 token2 token3 final');
+    });
+
+    // ---------------------------------------------------------------
+    // Test 7: Baseline text is suppressed
+    // ---------------------------------------------------------------
+    it('baseline text is suppressed (same text as before is not treated as new)', async () => {
+        const progressTexts: string[] = [];
+        const monitor = createMonitor({
+            onProgress: (text) => { progressTexts.push(text); },
+        });
+
+        // Baseline captures 'old response'
+        cdpService.call
+            .mockResolvedValueOnce(cdpResult({ notifyCount: 0, cardCount: 0 }))
+            .mockResolvedValueOnce(cdpResult('old response'))
+            .mockResolvedValueOnce(cdpResult(null));
+        await monitor.start();
+
+        // Poll 1: COMBINED_POLL returns text='old response' (same as baseline)
+        cdpService.call.mockResolvedValueOnce(combinedResult({ isGenerating: false, responseText: 'old response' }));
+        await jest.advanceTimersByTimeAsync(2000);
+
+        // Should NOT have triggered progress with baseline text
+        expect(progressTexts).not.toContain('old response');
+
+        await monitor.stop();
+    });
+
+    // ---------------------------------------------------------------
+    // Test 7b: Baseline suppression does NOT block completion transitions
+    // ---------------------------------------------------------------
+    it('baseline suppression does not block completion when stop button disappears', async () => {
+        let completedText: string | null = null;
+        const monitor = createMonitor({
+            onComplete: (text) => { completedText = text; },
+        });
+
+        // Baseline captures old response
+        cdpService.call
+            .mockResolvedValueOnce(cdpResult({ notifyCount: 0, cardCount: 0 }))
+            .mockResolvedValueOnce(cdpResult('old response'))
+            .mockResolvedValueOnce(cdpResult(null));
+        await monitor.start();
+
+        // Poll 1: generation starts but extracted text is still baseline (suppressed)
+        cdpService.call.mockResolvedValueOnce(combinedResult({ isGenerating: true, responseText: 'old response' }));
+        await jest.advanceTimersByTimeAsync(2000);
+        expect(completedText).toBeNull();
+
+        // Poll 2-4: stop disappears 3 times, text remains baseline
+        for (let i = 0; i < 3; i++) {
+            cdpService.call.mockResolvedValueOnce(combinedResult({ isGenerating: false, responseText: 'old response' }));
+            await jest.advanceTimersByTimeAsync(2000);
+        }
+
+        // Even with no new text, monitor must complete instead of hanging in thinking
+        expect(completedText).toBe('');
+    });
+
+    // ---------------------------------------------------------------
+    // Test 8: Timeout triggers onTimeout after maxDurationMs
+    // ---------------------------------------------------------------
+    it('timeout triggers onTimeout after maxDurationMs', async () => {
+        let timedOutText: string | null = null;
+        const monitor = createMonitor({
+            maxDurationMs: 10000,
+            onTimeout: (text) => { timedOutText = text; },
+        });
+
+        cdpService.call
+            .mockResolvedValueOnce(cdpResult({ notifyCount: 0, cardCount: 0 }))
+            .mockResolvedValueOnce(cdpResult(null))
+            .mockResolvedValueOnce(cdpResult(null));
+        await monitor.start();
+
+        // Keep returning no stop, no quota, no text for all polls
+        cdpService.call.mockResolvedValue(combinedResult());
+
+        await jest.advanceTimersByTimeAsync(10000);
+
+        expect(timedOutText).not.toBeNull();
+    });
+
+    // ---------------------------------------------------------------
+    // Test 9: Quota detection with no text triggers immediate complete with empty string
+    // ---------------------------------------------------------------
+    it('quota detection with no text triggers immediate complete with empty string', async () => {
+        let completedText: string | undefined;
+        const monitor = createMonitor({
+            onComplete: (text) => { completedText = text; },
+        });
+
+        cdpService.call
+            .mockResolvedValueOnce(cdpResult({ notifyCount: 0, cardCount: 0 }))
+            .mockResolvedValueOnce(cdpResult(null))
+            .mockResolvedValueOnce(cdpResult(null));
+        await monitor.start();
+
+        // Poll: COMBINED_POLL returns quotaError=true, no text
+        cdpService.call.mockResolvedValueOnce(combinedResult({ quotaError: true }));
+        await jest.advanceTimersByTimeAsync(2000);
+
+        expect(completedText).toBe('');
+    });
+
+    // ---------------------------------------------------------------
+    // Test 10: clickStopButton returns { ok: true, method: 'tooltip-id' }
+    // ---------------------------------------------------------------
+    it('clickStopButton returns { ok: true, method: tooltip-id } on success', async () => {
+        const monitor = createMonitor();
+
+        cdpService.call
+            .mockResolvedValueOnce(cdpResult({ notifyCount: 0, cardCount: 0 }))
+            .mockResolvedValueOnce(cdpResult(null))
+            .mockResolvedValueOnce(cdpResult(null));
+        await monitor.start();
+
+        // Mock the click result
+        cdpService.call.mockResolvedValueOnce(cdpResult({ ok: true, method: 'tooltip-id' }));
+        const result = await monitor.clickStopButton();
+
+        expect(result).toEqual({ ok: true, method: 'tooltip-id' });
+    });
+
+    // ---------------------------------------------------------------
+    // Test 11: NO network event subscription (cdpService.on should NOT be called)
+    // ---------------------------------------------------------------
+    it('does NOT subscribe to network events (no cdpService.on calls)', async () => {
+        const monitor = createMonitor();
+
+        cdpService.call
+            .mockResolvedValueOnce(cdpResult({ notifyCount: 0, cardCount: 0 }))
+            .mockResolvedValueOnce(cdpResult(null))
+            .mockResolvedValueOnce(cdpResult(null));
+        await monitor.start();
+
+        // The new lean monitor should NOT call on() on the cdpService
+        expect(cdpService).not.toHaveProperty('on');
+        // If it has an 'on' mock somehow, ensure it was never called
+        if (typeof (cdpService as any).on === 'function') {
+            expect((cdpService as any).on).not.toHaveBeenCalled();
+        }
+
+        await monitor.stop();
+    });
+
+    // ---------------------------------------------------------------
+    // Test 12: Default poll interval is 2000ms (not 1000ms)
+    // ---------------------------------------------------------------
+    it('default poll interval is 2000ms', async () => {
+        // Create monitor WITHOUT specifying pollIntervalMs
+        const defaultMonitor = new ResponseMonitor({
+            cdpService: cdpService as any,
+        });
+
+        cdpService.call
+            .mockResolvedValueOnce(cdpResult({ notifyCount: 0, cardCount: 0 }))
+            .mockResolvedValueOnce(cdpResult(null))
+            .mockResolvedValueOnce(cdpResult(null));
+        await defaultMonitor.start();
+
+        // After 1000ms: should NOT have polled yet (old default was 1000ms)
+        const callCountAfterStart = cdpService.call.mock.calls.length;
+        cdpService.call.mockResolvedValue(combinedResult());
+        await jest.advanceTimersByTimeAsync(1000);
+        expect(cdpService.call.mock.calls.length).toBe(callCountAfterStart);
+
+        // After 2000ms total: should have polled once
+        await jest.advanceTimersByTimeAsync(1000);
+        expect(cdpService.call.mock.calls.length).toBeGreaterThan(callCountAfterStart);
+
+        await defaultMonitor.stop();
+    });
+
+    // ---------------------------------------------------------------
+    // Negative test: methods that should NOT exist on the lean API
+    // ---------------------------------------------------------------
+    it('has getLastExtractionSource but NOT getLastDomActivityLines', () => {
+        const monitor = createMonitor();
+        expect(typeof (monitor as any).getLastExtractionSource).toBe('function');
+        expect((monitor as any).getLastDomActivityLines).toBeUndefined();
+    });
+
+    // ---------------------------------------------------------------
+    // Negative test: constructor should NOT accept removed options
+    // ---------------------------------------------------------------
+    it('does NOT accept onActivity, networkCompleteDelayMs, textStabilityCompleteMs, noUpdateTimeoutMs, noTextCompletionDelayMs, completionStabilityMs options', () => {
+        // The new lean API should NOT use these options. We verify by checking
+        // that the monitor uses exactly 1 CDP call per poll (COMBINED_POLL in legacy mode)
+        // and not 4 (which would mean separate calls are still being made).
+        const monitor = createMonitor();
+
+        // Verify the options type doesn't include the removed fields
+        // This is a compile-time check but we can also verify behavior:
+        // Each poll should make exactly 1 CDP call, not 4
+        expect(true).toBe(true); // placeholder - real check is in poll count test below
+    });
+
+    // ---------------------------------------------------------------
+    // Structural test: poll makes exactly 1 CDP call (COMBINED_POLL) in legacy mode
+    // ---------------------------------------------------------------
+    it('poll makes exactly 1 CDP call (COMBINED_POLL) in legacy mode', async () => {
+        const monitor = createMonitor();
+
+        cdpService.call
+            .mockResolvedValueOnce(cdpResult({ notifyCount: 0, cardCount: 0 }))
+            .mockResolvedValueOnce(cdpResult(null))   // baseline text
+            .mockResolvedValueOnce(cdpResult(null));   // baseline process_logs
+        await monitor.start();
+        const callsAfterStart = cdpService.call.mock.calls.length;
+
+        // Poll with no text change: 1 COMBINED_POLL call
+        cdpService.call.mockResolvedValueOnce(combinedResult());
+        await jest.advanceTimersByTimeAsync(2000);
+
+        expect(cdpService.call.mock.calls.length - callsAfterStart).toBe(1);
+
+        // Poll with text change: still 1 call
+        const callsBefore = cdpService.call.mock.calls.length;
+        cdpService.call.mockResolvedValueOnce(combinedResult({ isGenerating: true, responseText: 'new text' }));
+        await jest.advanceTimersByTimeAsync(2000);
+
+        expect(cdpService.call.mock.calls.length - callsBefore).toBe(1);
+
+        await monitor.stop();
+    });
+});

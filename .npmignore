@@ -1,0 +1,42 @@
+# Source (distributed as compiled JS in dist/)
+src/
+tests/
+
+# Development config
+tsconfig.json
+jest.config.*
+.eslintrc*
+.prettierrc*
+
+# Plans and docs (README included via files field)
+plans/
+docs/
+scripts/
+
+# IDE and tool config
+.claude/
+.gemini/
+.github/
+.vscode/
+.idea/
+
+# Environment and secrets
+.env
+.env.*
+.env.example
+
+# Runtime data
+*.db
+*.db-journal
+.bot.lock
+logs/
+coverage/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Misc
+empty-pkg/
+*.log
+npm-debug.log*

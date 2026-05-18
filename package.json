@@ -1,0 +1,85 @@
+{
+  "name": "remoat",
+  "version": "0.2.14",
+  "description": "Control Antigravity from anywhere — a local Telegram Bot that lets you remotely operate Antigravity on your home PC from your smartphone.",
+  "main": "dist/index.js",
+  "bin": {
+    "remoat": "dist/bin/cli.js"
+  },
+  "files": [
+    "dist/",
+    "locales/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "npm run test:unit",
+    "test:unit": "jest",
+    "test:integration": "jest tests/e2e.bot.test.ts",
+    "test:watch": "jest --watch",
+    "prebuild": "rm -f tsconfig.tsbuildinfo",
+    "build": "tsc",
+    "start": "ts-node src/bin/cli.ts",
+    "start:built": "node dist/bin/cli.js",
+    "dev": "ts-node-dev --respawn src/bin/cli.ts",
+    "docs:diagram": "mmdc -i docs/diagrams/architecture.mmd -o docs/images/architecture.svg -b transparent",
+    "prepublishOnly": "npm run build && npm run test"
+  },
+  "keywords": [
+    "telegram",
+    "telegram-bot",
+    "bot",
+    "ai",
+    "antigravity",
+    "remote-control",
+    "cdp",
+    "chrome-devtools-protocol",
+    "ai-coding",
+    "developer-tools",
+    "automation",
+    "grammy"
+  ],
+  "author": "Remoat Contributors",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/optimistengineer/Remoat.git"
+  },
+  "bugs": {
+    "url": "https://github.com/optimistengineer/Remoat/issues"
+  },
+  "homepage": "https://github.com/optimistengineer/Remoat#readme",
+  "dependencies": {
+    "better-sqlite3": "^12.6.2",
+    "commander": "^14.0.3",
+    "dotenv": "^17.3.1",
+    "grammy": "^1.40.1",
+    "node-cron": "^4.2.1",
+    "ws": "^8.19.0"
+  },
+  "optionalDependencies": {
+    "ffmpeg-static": "^5.3.0",
+    "nodejs-whisper": "^0.2.9"
+  },
+  "devDependencies": {
+    "@mermaid-js/mermaid-cli": "^11.12.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^25.3.0",
+    "@types/node-cron": "^3.0.11",
+    "@types/ws": "^8.18.1",
+    "jest": "^30.2.0",
+    "jest-environment-jsdom": "^30.2.0",
+    "jsdom": "^28.1.0",
+    "ts-jest": "^29.4.6",
+    "ts-node": "^10.9.2",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.9.3"
+  }
+}
